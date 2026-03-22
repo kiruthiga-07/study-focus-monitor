@@ -1,70 +1,144 @@
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 import cv2
+import time
 import threading
 
-# Page Setup
-st.set_page_config(page_title="Deep Focus AI", page_icon="🧘")
-st.title("🧘 Deep Focus AI")
+# -----------------------------
+# Page config
+# -----------------------------
+st.set_page_config(page_title="Deep Focus Monitor", page_icon="🧘")
 
-# We use a simple class to store our "Focus Points"
-class SessionState:
+st.title("🧘 Deep Focus Monitor")
+st.write("Stay in frame to keep your focus timer running!")
+
+lock = threading.Lock()
+container = {"is_focused": False, "camera_on": False}
+
+
+# -----------------------------
+# Video Processor
+# -----------------------------
+class FaceDetector(VideoProcessorBase):
+
     def __init__(self):
-        self.focus_count = 0
-        self.is_focused = False
-
-# This persists the data even when the video is running
-if "state" not in st.session_state:
-    st.session_state.state = SessionState()
-
-class FocusProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.face = cv2.CascadeClassifier(
+            cv2.data.haarcascades +
+            "haarcascade_frontalface_default.xml"
+        )
 
     def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
 
-        # Update the focus count directly
-        if len(faces) > 0:
-            st.session_state.state.focus_count += 1
-            st.session_state.state.is_focused = True
-            color = (0, 255, 0)
-            label = "FOCUS MODE ON"
-        else:
-            st.session_state.state.is_focused = False
-            color = (0, 0, 255)
-            label = "NOT DETECTED"
+        img = frame.to_ndarray(format="bgr24")
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        faces = self.face.detectMultiScale(
+            gray,
+            1.1,
+            4
+        )
+
+        with lock:
+            container["camera_on"] = True
+            container["is_focused"] = len(faces) > 0
 
         for (x, y, w, h) in faces:
-            cv2.rectangle(img, (x, y), (x+w, y+h), color, 3)
-            cv2.putText(img, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        
+
+            cv2.rectangle(
+                img,
+                (x, y),
+                (x + w, y + h),
+                (0, 255, 0),
+                2
+            )
+
+            cv2.putText(
+                img,
+                "FOCUSED",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+            )
+
         return frame.from_ndarray(img, format="bgr24")
 
-# --- UI DISPLAY ---
-col1, col2 = st.columns([2, 1])
 
-with col1:
-    webrtc_streamer(
-        key="focus-stream",
-        video_processor_factory=FocusProcessor,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        media_stream_constraints={"video": True, "audio": False},
+# -----------------------------
+# Start camera
+# -----------------------------
+ctx = webrtc_streamer(
+    key="focus",
+    video_processor_factory=FaceDetector,
+    media_stream_constraints={"video": True, "audio": False},
+)
+
+
+# -----------------------------
+# Session State
+# -----------------------------
+if "focus_time" not in st.session_state:
+    st.session_state.focus_time = 0
+
+if "last_update" not in st.session_state:
+    st.session_state.last_update = time.time()
+
+
+# -----------------------------
+# Timer Logic
+# -----------------------------
+placeholder = st.empty()
+
+with lock:
+    focused = container["is_focused"]
+    camera_on = ctx.state.playing if ctx else False
+
+
+now = time.time()
+
+if camera_on and focused:
+
+    st.session_state.focus_time += int(
+        now - st.session_state.last_update
     )
 
-with col2:
-    st.subheader("Stats")
-    # This automatically refreshes the numbers
-    total_sec = st.session_state.state.focus_count // 20 # Approximation of seconds
-    st.metric("Total Focus Time", f"{total_sec} sec")
-    
-    if st.session_state.state.is_focused:
-        st.success("✨ YOU ARE HERE!")
-    else:
-        st.error("😴 WHERE ARE YOU??")
+    status = "✅ Focused"
+    color = "green"
 
-# Add an auto-refresh so the timer numbers move
-if st.button("Refresh Stats"):
-    st.rerun()
+elif camera_on and not focused:
+
+    status = "⚠️ Look at screen"
+    color = "red"
+
+else:
+
+    status = "📷 Camera Off"
+    color = "orange"
+
+
+st.session_state.last_update = now
+
+
+# -----------------------------
+# UI
+# -----------------------------
+with placeholder.container():
+
+    st.markdown(
+        f"<h2 style='color:{color}; text-align:center'>{status}</h2>",
+        unsafe_allow_html=True,
+    )
+
+    st.metric(
+        "Total Focus Time",
+        f"{st.session_state.focus_time} sec"
+    )
+
+
+# -----------------------------
+# Auto refresh every second
+# -----------------------------
+time.sleep(1)
+st.rerun()
