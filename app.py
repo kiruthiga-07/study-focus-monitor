@@ -1,76 +1,53 @@
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 import cv2
-import threading
+import mediapipe as mp
 import time
 
-# --- INITIAL SETUP ---
-st.set_page_config(page_title="Deep Focus Monitor", page_icon="🧘")
-st.title("🧘 Deep Focus Monitor")
-st.write("Timer starts automatically when the camera sees your face!")
+# --- SETUP ---
+st.set_page_config(page_title="Driver Drowsiness Alert", page_icon="🚗")
+st.title("🚗 AI Drowsiness Detector")
+st.write("Keep your eyes on the road! The app will alert you if you fall asleep.")
 
-# Shared variables between the Camera and the Webpage
-# We use a list for the timer so it's "mutable" across threads
-if "focus_data" not in st.session_state:
-    st.session_state.focus_data = {"seconds": 0, "active": False}
+# MediaPipe Face Mesh setup (better for eye tracking)
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
 
-lock = threading.Lock()
-
-# --- THE VIDEO BRAIN ---
-class FocusProcessor(VideoProcessorBase):
+class DrowsinessProcessor(VideoProcessorBase):
     def __init__(self):
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.closed_start_time = None
+        self.drowsy_alert = False
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
+        results = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-        # Update the global status
-        with lock:
-            st.session_state.focus_data["active"] = len(faces) > 0
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                # Get specific points for top and bottom eyelid
+                # Landmark 159 is top, 145 is bottom for the right eye
+                top = face_landmarks.landmark[159].y
+                bottom = face_landmarks.landmark[145].y
+                
+                distance = abs(top - bottom)
 
-        # Visual Feedback on Camera
-        for (x, y, w, h) in faces:
-            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 3)
-            cv2.putText(img, "FOCUSING", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
+                # Threshold: If distance is very small, eyes are closed
+                if distance < 0.015: 
+                    if self.closed_start_time is None:
+                        self.closed_start_time = time.time()
+                    
+                    # Check if closed for more than 2 seconds
+                    if time.time() - self.closed_start_time > 2:
+                        self.drowsy_alert = True
+                else:
+                    self.closed_start_time = None
+                    self.drowsy_alert = False
+
+                # Visual Feedback
+                color = (0, 0, 255) if self.drowsy_alert else (0, 255, 0)
+                status = "!!! WAKE UP !!!" if self.drowsy_alert else "AWAKE"
+                cv2.putText(img, status, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+
         return frame.from_ndarray(img, format="bgr24")
 
-# --- THE UI LAYOUT ---
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    # This turns on the camera
-    ctx = webrtc_streamer(
-        key="main-stream",
-        video_processor_factory=FocusProcessor,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        media_stream_constraints={"video": True, "audio": False},
-    )
-
-with col2:
-    st.subheader("Live Stats")
-    timer_display = st.empty()
-    status_display = st.empty()
-
-# --- THE AUTOMATIC TIMER LOOP ---
-# This runs only when the camera is 'Playing'
-if ctx.state.playing:
-    while True:
-        with lock:
-            is_focused = st.session_state.focus_data["active"]
-        
-        if is_focused:
-            st.session_state.focus_data["seconds"] += 1
-            msg = "✅ FOCUS MODE: ON"
-            color = "green"
-        else:
-            msg = "⚠️ NOT FOCUSED"
-            color = "red"
-
-        # Update the UI without refreshing the whole page
-        timer_display.metric("Total Focus Time", f"{st.session_state.focus_data['seconds']} sec")
-        status_display.markdown(f"<h3 style='color:{color};'>{msg}</h3>", unsafe_allow_html=True)
-        
-        time.sleep(1) # Wait 1 second for the next tick
+webrtc_streamer(key="drowsy-check", video_processor_factory=DrowsinessProcessor)
