@@ -1,5 +1,6 @@
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+from streamlit_autorefresh import st_autorefresh
 import cv2
 import time
 import threading
@@ -16,9 +17,9 @@ shared = {
 }
 
 
-# -------------------------
-# Face detector
-# -------------------------
+# ------------------------
+# Face Detector
+# ------------------------
 
 class FaceDetector(VideoProcessorBase):
 
@@ -57,75 +58,66 @@ class FaceDetector(VideoProcessorBase):
                 2
             )
 
-        return frame.from_ndarray(
-            img,
-            format="bgr24"
-        )
+        return frame.from_ndarray(img, format="bgr24")
 
 
-# -------------------------
+# ------------------------
 # Camera
-# -------------------------
+# ------------------------
 
 ctx = webrtc_streamer(
     key="focus",
     video_processor_factory=FaceDetector,
-    media_stream_constraints={
-        "video": True,
-        "audio": False,
-    },
+    media_stream_constraints={"video": True, "audio": False},
 )
 
 
-# -------------------------
+# ------------------------
+# Auto refresh every 1 sec
+# ------------------------
+
+st_autorefresh(interval=1000, key="timer")
+
+
+# ------------------------
 # Session state
-# -------------------------
+# ------------------------
 
 if "focus_time" not in st.session_state:
     st.session_state.focus_time = 0
-
-if "running" not in st.session_state:
-    st.session_state.running = False
 
 if "last_time" not in st.session_state:
     st.session_state.last_time = time.time()
 
 
-# -------------------------
-# Check status
-# -------------------------
+# ------------------------
+# Status
+# ------------------------
 
 camera_on = ctx.state.playing if ctx else False
 
 with lock:
     focused = shared["focused"]
 
-
 now = time.time()
 
 
 if camera_on and focused:
 
-    if st.session_state.running:
-        st.session_state.focus_time += int(
-            now - st.session_state.last_time
-        )
+    st.session_state.focus_time += int(
+        now - st.session_state.last_time
+    )
 
-    st.session_state.running = True
     status = "✅ Focused"
     color = "green"
 
-
 elif camera_on and not focused:
 
-    st.session_state.running = False
     status = "❌ Not Focused"
     color = "red"
 
-
 else:
 
-    st.session_state.running = False
     status = "📷 Camera Off"
     color = "orange"
 
@@ -133,9 +125,9 @@ else:
 st.session_state.last_time = now
 
 
-# -------------------------
+# ------------------------
 # UI
-# -------------------------
+# ------------------------
 
 st.markdown(
     f"<h2 style='text-align:center;color:{color}'>{status}</h2>",
